@@ -96,6 +96,18 @@ export function hostToolProperties(parameters: unknown): Record<string, unknown>
 	}
 }
 
+/**
+ * Paths a mutation targets. Pi's replace-mode tools name one `path`; a host whose
+ * edit tool takes a single patch string names them in `[PATH#TAG]` sections
+ * instead, so the pre-command hash check covers every file the payload edits.
+ */
+export function mutationTargets(input: unknown): string[] {
+	const record = input as { path?: unknown; input?: unknown };
+	if (typeof record.path === "string") return [record.path];
+	if (typeof record.input !== "string") return [];
+	return [...record.input.matchAll(/^\[(.+)#[0-9A-Fa-f]{4}\]/gm)].flatMap((match) => (match[1] ? [match[1]] : []));
+}
+
 export function createActionFusionExtension(options: ActionFusionOptions = {}): ExtensionFactory {
 	const baseEdit = memoizeByCwd((cwd: string) => createEditToolDefinition(cwd, options.editOptions));
 	const baseWrite = memoizeByCwd((cwd: string) => createWriteToolDefinition(cwd, options.writeOptions));
@@ -123,20 +135,23 @@ export function createActionFusionExtension(options: ActionFusionOptions = {}): 
 			then_run: createThenRunSchema(WRITE_THEN_RUN_DESCRIPTION),
 		});
 
-		// The fused queue and the pre-command hash check are keyed on one target
-		// file, so only replace a mutation tool that names its target with `path`.
-		// A host whose edit tool takes a different shape (a multi-file patch, say)
-		// keeps its built-in tool rather than getting a fused one that cannot
-		// resolve a target.
-		if ("path" in editProperties) {
+		// The fused queue and the pre-command hash check are keyed on the mutation's
+		// targets, so replace a mutation tool only when its schema names them: a
+		// `path` field, or the patch-string shape whose `[PATH#TAG]` sections carry
+		// the paths. A host with any other shape keeps its built-in tool.
+		if ("path" in editProperties || "input" in editProperties) {
 			pi.registerTool<typeof editParameters, EditToolDetails | undefined>({
 				...editTemplate,
 				parameters: editParameters,
 				async execute(toolCallId, input, signal, onUpdate, ctx) {
 					const { then_run, ...editInput } = input as typeof input & { then_run?: ThenRunInput };
+					const targets = mutationTargets(input);
+					if (targets.length === 0) {
+						throw new Error("edit: the mutation names no target file");
+					}
 					const result = await executeMutationThenRun({
 						toolCallId,
-						absolutePath: resolveToolPath(ctx.cwd, input.path),
+						absolutePath: targets.map((target) => resolveToolPath(ctx.cwd, target)),
 						thenRun: then_run,
 						bashOptions: options.bashOptions,
 						signal,

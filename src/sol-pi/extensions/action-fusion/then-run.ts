@@ -52,14 +52,15 @@ async function fileSha256(path: string): Promise<string> {
 }
 
 export async function assertUnchangedBeforeCommand(
-	path: string,
+	path: string | readonly string[],
 	yieldForInterference: () => Promise<void> = () => new Promise<void>((resolve) => setImmediate(resolve)),
 ): Promise<void> {
+	const paths = typeof path === "string" ? [path] : path;
 	try {
-		const mutationHash = await fileSha256(path);
+		const mutationHashes = await Promise.all(paths.map(fileSha256));
 		await yieldForInterference();
-		const commandHash = await fileSha256(path);
-		if (mutationHash !== commandHash) {
+		const commandHashes = await Promise.all(paths.map(fileSha256));
+		if (mutationHashes.some((hash, index) => hash !== commandHashes[index])) {
 			throw new Error("target content changed after the fused mutation");
 		}
 	} catch (error) {
@@ -85,14 +86,17 @@ export async function executeMutationThenRun<TDetails>({
 	ctx,
 }: {
 	toolCallId: string;
-	absolutePath: string;
+	absolutePath: string | readonly string[];
 	thenRun: ThenRunInput | undefined;
 	mutate: () => Promise<AgentToolResult<TDetails>>;
 	bashOptions: BashToolOptions | undefined;
 	signal: AbortSignal | undefined;
 	ctx: ExtensionContext;
 }): Promise<AgentToolResult<TDetails>> {
-	return withFusedFileQueue(absolutePath, async () => {
+	const targets = typeof absolutePath === "string" ? [absolutePath] : absolutePath;
+	const [queueTarget] = targets;
+	if (queueTarget === undefined) throw new Error("action-fusion: no mutation target");
+	return withFusedFileQueue(queueTarget, async () => {
 		let mutationResult: AgentToolResult<TDetails>;
 		try {
 			mutationResult = await mutate();
@@ -107,7 +111,7 @@ export async function executeMutationThenRun<TDetails>({
 			return mutationResult;
 		}
 
-		await assertUnchangedBeforeCommand(absolutePath);
+		await assertUnchangedBeforeCommand(targets);
 		const bash = createBashToolDefinition(ctx.cwd, bashOptions);
 		try {
 			const bashResult = await bash.execute(`${toolCallId}:then_run`, thenRun, signal, undefined, ctx);
