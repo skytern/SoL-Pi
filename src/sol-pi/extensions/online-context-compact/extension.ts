@@ -80,7 +80,12 @@ function resolveCacheWriteReadRatio(value: number | null | undefined): number | 
 	return value;
 }
 
-function tokenEstimate(text: string): number {
+// omp's ExtensionContext.getSystemPrompt() returns content parts; pi returns a plain string.
+type SystemPromptPart = string | { readonly text?: string };
+
+function tokenEstimate(prompt: string | readonly SystemPromptPart[]): number {
+	const text =
+		typeof prompt === "string" ? prompt : prompt.map((part) => (typeof part === "string" ? part : (part.text ?? ""))).join("\n");
 	return Math.ceil(Buffer.byteLength(text) / 4);
 }
 
